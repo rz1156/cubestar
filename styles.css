@@ -1,38 +1,50 @@
-*{
-    margin:0;
-    padding:0;
-    box-sizing:border-box;
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-body{
-
-    background:#000;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-
+body {
+    background: #020205;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
 }
 
-.camera-container{
-
-    position:relative;
-    width:900px;
-    aspect-ratio:16/9;
-
+.camera-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: filter 0.4s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
-video{
+/* State khusus untuk Peace Sign / Toggle Focus Mode */
+.camera-container.focus-mode {
+    filter: blur(12px);
+}
 
-    width:100%;
-    height:100%;
+video {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    z-index: 1;
+}
 
-    object-fit:cover;
-
-    border-radius:20px;
-
-    transform:scaleX(-1);
-
+#three-container {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
 }
 
 canvas {
@@ -42,7 +54,73 @@ canvas {
     height: 100%;
     pointer-events: none;
     transform: scaleX(-1);
-    
-    /* TAMBAHKAN BARIS DI BAWAH INI */
-    object-fit: cover; 
+    object-fit: cover;
+    z-index: 3;
+}
+
+/* Apple Vision Pro Glassmorphism UI Style */
+.glass-panel {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(25px) saturate(190%);
+    -webkit-backdrop-filter: blur(25px) saturate(190%);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+    padding: 16px;
+    color: #ffffff;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37),
+                inset 0 1px 1px 0 rgba(255, 255, 255, 0.1);
+    z-index: 4;
+}
+
+#object-inspector {
+    top: 24px;
+    left: 24px;
+    width: 280px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+}
+
+#object-inspector h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: rgba(255, 255, 255, 0.9);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 6px;
+}
+
+.inspector-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.inspector-row span:first-child {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+#spatial-menu {
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 24px;
+}
+
+.menu-title {
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.gesture-hints {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.hidden {
+    display: none !important;
 }
