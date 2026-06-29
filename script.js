@@ -153,18 +153,15 @@ const camera = new Camera(video, {
 camera.start();
 
 // ==========================================
-// DATA ACQUISITION & ANTI-SWAP IDENTITY MATCHING
+// DATA ACQUISITION (HANYA UNTUK PROSES DATA)
 // ==========================================
 function onResults(results) {
     const now = performance.now();
     const dt = (now - lastTimestamp) / 1000;
     lastTimestamp = now;
 
-    // Memastikan canvas sinkron dengan dimensi frame video asli
-    if (video.videoWidth && video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-    }
+    // HAPUS BARI PERUBAHAN CANVAS WIDTH/HEIGHT DI SINI 
+    // AGAR TIDAK BENTROK DENGAN RENDER LOOP
 
     let currentDetections = [];
     if (results.multiHandLandmarks && results.multiHandedness) {
@@ -178,15 +175,12 @@ function onResults(results) {
 
     let nextTrackedHands = [];
 
-    // Nearest Neighbor & Spatial Continuity Matching
     currentDetections.forEach((det) => {
         let matchedIndex = -1;
-        let closestDistance = 0.22; // Threshold maksimal jarak pergeseran per frame (Normalized)
+        let closestDistance = 0.22;
 
         for (let j = 0; j < trackedHands.length; j++) {
             const th = trackedHands[j];
-            
-            // Validasi berbasis jarak Euclidean pada titik Wrist Anchor
             const distance = Math.sqrt(
                 Math.pow(det.landmarks[WRIST_LANDMARK].x - th.smoothedLandmarks[WRIST_LANDMARK].x, 2) +
                 Math.pow(det.landmarks[WRIST_LANDMARK].y - th.smoothedLandmarks[WRIST_LANDMARK].y, 2)
@@ -199,19 +193,16 @@ function onResults(results) {
         }
 
         if (matchedIndex !== -1) {
-            // Perbarui data historis objek tracking yang cocok
             const handInstance = trackedHands[matchedIndex];
             handInstance.update(det.landmarks, det.info, dt);
             nextTrackedHands.push(handInstance);
-            trackedHands.splice(matchedIndex, 1); // Buang dari pool antrean agar tidak double-match
+            trackedHands.splice(matchedIndex, 1);
         } else {
-            // Daftarkan tangan baru jika tidak ditemukan kecocokan historis terdekat
             const newHand = new TrackedHand(det.landmarks, det.info);
             nextTrackedHands.push(newHand);
         }
     });
 
-    // Tracking Persistence Engine: Pertahankan objek jika hilang sesaat (akibat occlusion)
     trackedHands.forEach((th) => {
         if (now - th.lastSeen < TRACKING_PERSISTENCE_MS) {
             th.extrapolate(dt);
@@ -223,10 +214,16 @@ function onResults(results) {
 }
 
 // ==========================================
-// HIGH PERFORMANCE 60 FPS DECOUPLED RENDERING LOOP
+// HIGH PERFORMANCE RENDERING LOOP (60 FPS)
 // ==========================================
 function renderLoop() {
     requestAnimationFrame(renderLoop);
+
+    // KUNCI UTAMA: Kunci ukuran internal buffer canvas agar selalu 1:1 dengan resolusi mentah video
+    if (video.videoWidth && canvas.width !== video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    }
 
     // Bersihkan layar canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -234,13 +231,12 @@ function renderLoop() {
     if (trackedHands.length === 0) return;
 
     trackedHands.forEach((hand) => {
-        // Ambil data posisi yang sudah dikompensasi latency menggunakan algoritma prediksi
         const renderLandmarks = hand.getPredictedLandmarks();
 
         // 1. Gambar Connectors (Skeleton Tulang)
         drawConnectors(ctx, renderLandmarks, HAND_CONNECTIONS, {
-            color: hand.label === "Right" ? "#00FF88" : "#FF0077", // Pembeda warna visual tegas kiri vs kanan
-            lineWidth: 3.5
+            color: hand.label === "Right" ? "#00FF88" : "#FF0077",
+            lineWidth: 4
         });
 
         // 2. Gambar Joint Dots (Titik Landmark)
@@ -250,18 +246,18 @@ function renderLoop() {
             radius: 4
         });
 
-        // 3. Apple Vision Pro Style: Render UI Pointer Stabilizer Ring di Ujung Jari Telunjuk
+        // 3. Apple Vision Pro Style Pointer Ring
         const indexTip = renderLandmarks[POINTER_LANDMARK];
         ctx.beginPath();
-        ctx.arc(indexTip.x * canvas.width, indexTip.y * canvas.height, 9, 0, 2 * Math.PI);
+        ctx.arc(indexTip.x * canvas.width, indexTip.y * canvas.height, 10, 0, 2 * Math.PI);
         ctx.strokeStyle = "#FFFFFF";
-        ctx.lineWidth = 2.5;
-        ctx.shadowBlur = 8;
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
         ctx.shadowColor = "#00FFFF";
         ctx.stroke();
-        ctx.shadowBlur = 0; // Reset efek bayangan shadow
+        ctx.shadowBlur = 0; 
     });
 }
 
-// Jalankan loop visual konstan secara asinkronus mendahului AI thread
+// Jalankan loop visual
 requestAnimationFrame(renderLoop);
