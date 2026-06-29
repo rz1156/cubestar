@@ -1,338 +1,267 @@
-// ============================================================================
-// APPLE VISION PRO - CORE SPATIAL COMPUTING ENGINE (PERFECT ALIGNMENT)
-// ============================================================================
-
+// ==========================================
+// CONFIGURATION & GLOBAL STABILITY PARAMETERS
+// ==========================================
 const video = document.getElementById("video");
-const canvas3d = document.getElementById("three-canvas");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
-// --- 1. SET UP RUANG 3D & PROYEKSI KAMERA ---
-const scene = new THREE.Scene();
-const camera3d = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1000); // Rasio dikunci ke 16:9
-const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: true });
+const TRACKING_PERSISTENCE_MS = 800;  // Durasi mempertahankan tracking saat tangan hilang (ms)
+const PREDICTION_FACTOR_MS = 40;      // Faktor prediksi gerakan ke depan untuk memotong delay visual (ms)
+const POINTER_LANDMARK = 8;           // Indeks Ujung Jari (Index Finger Tip) untuk presisi pointer
+const WRIST_LANDMARK = 0;             // Titik Jangkar Utama (Wrist)
 
-renderer.setSize(canvas3d.clientWidth, canvas3d.clientHeight, false);
-camera3d.position.set(0, 0, 5); // Jarak kamera optimal untuk melacak kedalaman tangan
+let trackedHands = [];
+let lastTimestamp = performance.now();
 
-// Tata Cahaya Spasial
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
-dirLight.position.set(5, 8, 5);
-scene.add(dirLight);
+// ==========================================
+// PROFESSIONAL TRACKING CORE: HAND CLASS
+// ==========================================
+class TrackedHand {
+    constructor(landmarks, handedness) {
+        this.id = Math.random().toString(36).substring(2, 9);
+        this.label = handedness.label; // "Left" atau "Right"
+        this.confidence = handedness.score;
+        this.lastSeen = performance.now();
 
-// --- 2. STATE & SMOOTHING BUFFER VARIABLE ---
-const MAX_OBJECTS = 20;
-let spatialObjects = [];
-let selectedObject = null;
-let hoveredObject = null;
+        // Alokasi memori koordinat & kecepatan
+        this.smoothedLandmarks = landmarks.map(p => ({ x: p.x, y: p.y, z: p.z }));
+        this.velocities = landmarks.map(() => ({ x: 0, y: 0, z: 0 }));
 
-let pinchState = 'RELEASED';
-let spawnTimer = 0;
-let deleteTimer = 0;
-
-// Array 21 Titik untuk Menampung Koordinat Tangan yang Sudah Dihaluskan (Bebas Jitter)
-let smoothedLandmarks = Array.from({ length: 21 }, () => new THREE.Vector3());
-
-// Pointer Utama Ujung Jari Telunjuk (Feature 1)
-const pointerGeometry = new THREE.SphereGeometry(0.09, 32, 32);
-const pointerMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.85 });
-const spatialPointer = new THREE.Mesh(pointerGeometry, pointerMaterial);
-spatialPointer.add(new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), new THREE.MeshBasicMaterial({ color: 0xffffff })));
-scene.add(spatialPointer);
-
-const handVisualizerGroup = new THREE.Group();
-scene.add(handVisualizerGroup);
-
-// --- 3. METODE KALIBRASI POSISI 1:1 (MATRIKS JAVASCRIPT) ---
-function mapToSpatialSpace(landmark) {
-    // Hitung ukuran lebar & tinggi dinding kamera 3D secara dinamis di koordinat Z = 0
-    const distance = camera3d.position.z;
-    const visibleHeight = 2 * Math.tan((camera3d.fov * Math.PI) / 360) * distance;
-    const visibleWidth = visibleHeight * camera3d.aspect;
-
-    // KUNCI UTAMA: Membalik sumbu X di sini (-(landmark.x - 0.5)) karena video dicerminkan lewat CSS.
-    // Ini membuat koordinat 3D Three.js sinkron sempurna dengan tangan asli Anda di kamera.
-    const targetX = -(landmark.x - 0.5) * visibleWidth;
-    const targetY = -(landmark.y - 0.5) * visibleHeight;
-    const targetZ = -(landmark.z * 4.0); // Amplifikasi pergerakan kedalaman maju-mundur
-
-    return new THREE.Vector3(targetX, targetY, targetZ);
-}
-
-// --- 4. ENGINE DETEKSI GESTURE ---
-function evaluateGestures(landmarks) {
-    const thumbTip = landmarks[4];
-    const indexTip = landmarks[8];
-    const indexKnuckle = landmarks[5];
-    const middleTip = landmarks[12];
-    const ringTip = landmarks[16];
-    const pinkyTip = landmarks[20];
-
-    // Jarak jepitan jempol dan telunjuk
-    const pinchDist = thumbTip.distanceTo(indexTip);
-    
-    const isIndexExtended = indexTip.y < indexKnuckle.y;
-    const isMiddleExtended = middleTip.y < landmarks[9].y;
-    const isRingExtended = ringTip.y < landmarks[13].y;
-    const isPinkyExtended = pinkyTip.y < landmarks[17].y;
-
-    if (pinchDist < 0.25) { // Threshold disesuaikan dengan skala ruang 3D yang baru
-        pinchState = (pinchState === 'RELEASED') ? 'PRESSED' : 'HOLDING';
-    } else {
-        pinchState = 'RELEASED';
+        // Buffer untuk kestabilan gesture debouncing
+        this.gestureActive = false;
+        this.gestureFramesTracked = 0;
     }
 
-    if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) return { name: "Fist (Kepalan)", basic: "CLOSED" };
-    if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) return { name: "Peace Sign", basic: "PEACE" };
-    if (isIndexExtended && isMiddleExtended && isRingExtended && isPinkyExtended) return { name: "Open Palm (Tangan Terbuka)", basic: "OPEN" };
-    if (pinchState === 'HOLDING' || pinchState === 'PRESSED') return { name: "Pinch / Grab", basic: "PINCH" };
-
-    return { name: "Mencari Tangan...", basic: "UNKNOWN" };
-}
-
-// --- 5. INTERAKSI SPASIAL & PENDARAN HOVER ---
-function handleObjectHover(pointerPos) {
-    let closestObj = null;
-    let minDistance = 0.5;
-
-    spatialObjects.forEach(obj => {
-        const dist = pointerPos.distanceTo(obj.mesh.position);
-        if (dist < minDistance) {
-            minDistance = dist;
-            closestObj = obj;
-        }
-    });
-
-    if (closestObj) {
-        if (hoveredObject !== closestObj) {
-            clearHoverState();
-            hoveredObject = closestObj;
-            hoveredObject.mesh.material.emissive.setHex(0x002233); // Efek Glow saat disentuh pointer
-        }
-    } else {
-        clearHoverState();
-    }
-}
-
-function clearHoverState() {
-    if (hoveredObject) {
-        hoveredObject.mesh.material.emissive.setHex(0x000000);
-        hoveredObject = null;
-    }
-}
-
-function createSpatialObject(position) {
-    if (spatialObjects.length >= MAX_OBJECTS) return;
-
-    const types = ['cube', 'sphere', 'panel'];
-    const type = types[Math.floor(Math.random() * types.length)];
-    let geom;
-
-    if (type === 'cube') geom = new THREE.BoxGeometry(0.6, 0.6, 0.6);
-    else if (type === 'sphere') geom = new THREE.SphereGeometry(0.35, 32, 32);
-    else geom = new THREE.BoxGeometry(1.0, 0.6, 0.03); // Panel visionOS Window
-
-    const mat = new THREE.MeshStandardMaterial({
-        color: Math.random() * 0xffffff,
-        roughness: 0.15,
-        metalness: 0.1,
-        transparent: true,
-        opacity: 0.85
-    });
-
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.position.copy(position);
-    scene.add(mesh);
-
-    spatialObjects.push({
-        id: Math.floor(Math.random() * 10000),
-        type: type,
-        mesh: mesh,
-        velocity: new THREE.Vector3(0, 0, 0)
-    });
-}
-
-function dissolveObject(obj) {
-    const duration = 300;
-    const start = Date.now();
-    function anim() {
-        const progress = (Date.now() - start) / duration;
-        if (progress < 1) {
-            obj.mesh.scale.multiplyScalar(0.85);
-            obj.mesh.material.opacity = 1 - progress;
-            requestAnimationFrame(anim);
-        } else {
-            scene.remove(obj.mesh);
-            spatialObjects = spatialObjects.filter(item => item.id !== obj.id);
-            if (selectedObject === obj) selectedObject = null;
-            updateInspector();
-        }
-    }
-    anim();
-}
-
-// --- 6. RENDERING TULANG TANGAN PREMIUM (Feature 14) ---
-function drawPremiumSkeleton() {
-    handVisualizerGroup.clear();
-    const jointMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
-    const boneMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
-
-    // Render bola pendar di setiap sendi
-    smoothedLandmarks.forEach(pos => {
-        const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), jointMat);
-        sphere.position.copy(pos);
-        handVisualizerGroup.add(sphere);
-    });
-
-    // Hubungkan garis antar sendi tangan
-    HAND_CONNECTIONS.forEach(conn => {
-        const geom = new THREE.BufferGeometry().setFromPoints([smoothedLandmarks[conn[0]], smoothedLandmarks[conn[1]]]);
-        handVisualizerGroup.add(new THREE.Line(geom, boneMat));
-    });
-}
-
-// --- 7. UTAMA: PROCESSING LOOP PIPELINE ---
-function onResults(results) {
-    if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-        spatialPointer.visible = false;
-        handVisualizerGroup.clear();
-        clearHoverState();
-        document.getElementById("current-gesture").innerText = "Mencari Tangan...";
-        return;
-    }
-
-    spatialPointer.visible = true;
-    const primaryHandRaw = results.multiHandLandmarks[0];
-    
-    // TAHAP FILTER UTAMA: Ambil koordinat mentah, lalu lakukan LERP ke array smoothedLandmarks.
-    // Koefisien 0.35 memberikan keseimbangan sempurna: Getaran hilang total, tapi respons instan tanpa lag!
-    for (let i = 0; i < 21; i++) {
-        const targetPos = mapToSpatialSpace(primaryHandRaw[i]);
-        smoothedLandmarks[i].lerp(targetPos, 0.35);
-    }
-
-    // Tempatkan kursor di koordinat ujung jari telunjuk yang sudah halus (index 8)
-    spatialPointer.position.copy(smoothedLandmarks[8]);
-
-    // Gambar kerangka tangan digital yang mewah
-    drawPremiumSkeleton();
-
-    // Evaluasi gesture berdasarkan sendi yang sudah dihaluskan
-    const gesture = evaluateGestures(smoothedLandmarks);
-    document.getElementById("current-gesture").innerText = `Gesture: ${gesture.name}`;
-
-    handleObjectHover(spatialPointer.position);
-
-    // LOGIK MANIPULASI OBJEK BERDASARKAN GESTURE
-    if (gesture.basic === "OPEN") {
-        spawnTimer += 16.67;
-        if (spawnTimer >= 1000) { // Tahan 1 detik untuk memunculkan objek baru
-            createSpatialObject(spatialPointer.position.clone().add(new THREE.Vector3(0, 0, -0.4)));
-            spawnTimer = 0;
-        }
-    } else { spawnTimer = 0; }
-
-    if (pinchState === 'PRESSED' && hoveredObject) {
-        selectedObject = hoveredObject;
-    }
-
-    if (pinchState === 'HOLDING' && selectedObject) {
-        const lastPos = selectedObject.mesh.position.clone();
+    /**
+     * Memperbarui posisi landmark menggunakan Adaptive Smooth EMA, Deadzone, dan Velocity Calculation
+     */
+    update(newLandmarks, handedness, dt) {
+        this.lastSeen = performance.now();
         
-        // Objek ditarik mengikuti kursor dengan lerp halus 0.2
-        selectedObject.mesh.position.lerp(spatialPointer.position, 0.2);
-        
-        // Hitung sisa energi gerakan untuk efek lemparan fisika meluncur (momentum)
-        selectedObject.velocity.subVectors(selectedObject.mesh.position, lastPos);
-
-        // Hitung orientasi rotasi objek berdasarkan arah telapak tangan (pergelangan ke jari tengah)
-        const wrist = smoothedLandmarks[0];
-        const knuckle = smoothedLandmarks[9];
-        const dir = new THREE.Vector3().subVectors(knuckle, wrist).normalize();
-        selectedObject.mesh.rotation.x = dir.y * 1.8;
-        selectedObject.mesh.rotation.y = dir.x * 1.8;
-    }
-
-    if (pinchState === 'RELEASED') selectedObject = null;
-
-    // Penskalaan Objek Dua Tangan (Feature 9)
-    if (results.multiHandLandmarks.length >= 2 && gesture.basic === "OPEN" && selectedObject) {
-        const secondaryHandRaw = results.multiHandLandmarks[1];
-        const secPointerTarget = mapToSpatialSpace(secondaryHandRaw[8]);
-        const dist = spatialPointer.position.distanceTo(secPointerTarget);
-        selectedObject.mesh.scale.setScalar(Math.max(0.4, Math.min(2.5, dist * 0.6)));
-    }
-
-    if (gesture.basic === "CLOSED" && hoveredObject) {
-        deleteTimer += 16.67;
-        if (deleteTimer >= 1000) { // Kepalkan tangan di atas objek selama 1 detik untuk menghapus
-            dissolveObject(hoveredObject);
-            deleteTimer = 0;
+        // Mempertahankan stabilitas identitas label tangan kiri/kanan melalui seleksi confidence tinggi
+        if (handedness.score > 0.85) {
+            this.label = handedness.label;
         }
-    } else { deleteTimer = 0; }
 
-    updateInspector();
-}
+        const MIN_ALPHA = 0.06;   // Reduksi getaran maksimal saat tangan diam statis
+        const MAX_ALPHA = 0.80;   // Kecepatan respon instan tanpa delay saat gerakan eksplosif
+        const DEADZONE = 0.0007;  // Mengabaikan noise getaran sub-piksel kamera mikro
 
-function updateInspector() {
-    const panel = document.getElementById("object-inspector");
-    if (!selectedObject) { panel.classList.add("hidden"); return; }
-    panel.classList.remove("hidden");
-    document.getElementById("inspect-status").innerText = "GRABBED";
-    document.getElementById("inspect-status").className = "badge active";
-    document.getElementById("inspect-id").innerText = selectedObject.id;
-    document.getElementById("inspect-type").innerText = selectedObject.type.toUpperCase();
-    document.getElementById("inspect-px").innerText = selectedObject.mesh.position.x.toFixed(2);
-    document.getElementById("inspect-py").innerText = selectedObject.mesh.position.y.toFixed(2);
-    document.getElementById("inspect-pz").innerText = selectedObject.mesh.position.z.toFixed(2);
-    document.getElementById("inspect-rx").innerText = selectedObject.mesh.rotation.x.toFixed(2);
-    document.getElementById("inspect-ry").innerText = selectedObject.mesh.rotation.y.toFixed(2);
-    document.getElementById("inspect-rz").innerText = selectedObject.mesh.rotation.z.toFixed(2);
-    document.getElementById("inspect-scale").innerText = selectedObject.mesh.scale.x.toFixed(2);
-}
+        for (let i = 0; i < 21; i++) {
+            const current = newLandmarks[i];
+            const prevSmooth = this.smoothedLandmarks[i];
 
-// --- 8. TICK ANIMATION & MOMENTUM PHYSICS (Feature 13) ---
-function animate() {
-    requestAnimationFrame(animate);
-    
-    spatialObjects.forEach(obj => {
-        if (obj !== selectedObject) {
-            // Jalankan peluncuran momentum fisika saat objek dilepas dari genggaman tangan
-            obj.mesh.position.add(obj.velocity);
-            obj.velocity.multiplyScalar(0.92); // Perlambatan gesekan udara secara halus
+            const dx = current.x - prevSmooth.x;
+            const dy = current.y - prevSmooth.y;
+            const dz = current.z - prevSmooth.z;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            // Anti-Jitter Deadzone System
+            if (distance < DEADZONE) {
+                this.velocities[i] = { x: 0, y: 0, z: 0 };
+                continue;
+            }
+
+            // Hitung kecepatan instan (Unit per detik)
+            const instVx = dt > 0 ? dx / dt : 0;
+            const instVy = dt > 0 ? dy / dt : 0;
+            const instVz = dt > 0 ? dz / dt : 0;
+
+            // Perhalus kecepatan menggunakan EMA Filter
+            this.velocities[i].x = this.velocities[i].x * 0.4 + instVx * 0.6;
+            this.velocities[i].y = this.velocities[i].y * 0.4 + instVy * 0.6;
+            this.velocities[i].z = this.velocities[i].z * 0.4 + instVz * 0.6;
+
+            // Hitung magnitudo kecepatan untuk mengatur nilai Alpha secara Adaptif
+            const currentSpeed = Math.sqrt(this.velocities[i].x * this.velocities[i].x + this.velocities[i].y * this.velocities[i].y);
+            const speedNormalized = Math.min(currentSpeed / 2.2, 1.0); // Normalisasi batas kecepatan atas
             
-            // Efek putaran lambat konstan saat melayang bebas
-            obj.mesh.rotation.x += 0.003;
-            obj.mesh.rotation.y += 0.002;
-        }
-    });
-    
-    renderer.render(scene, camera3d);
-}
-animate();
+            let adaptiveAlpha = MIN_ALPHA + (MAX_ALPHA - MIN_ALPHA) * speedNormalized;
 
-// --- 9. MENYALAKAN HARDWARE & ENGINE ---
+            // Optimalisasi ekstra presisi tinggi khusus untuk Pointer Utama (Index Tip)
+            if (i === POINTER_LANDMARK) {
+                adaptiveAlpha = Math.min(adaptiveAlpha * 1.25, 0.90);
+            }
+
+            // Terapkan integrasi smoothing akhir
+            this.smoothedLandmarks[i].x += adaptiveAlpha * dx;
+            this.smoothedLandmarks[i].y += adaptiveAlpha * dy;
+            this.smoothedLandmarks[i].z += adaptiveAlpha * dz;
+        }
+    }
+
+    /**
+     * Occlusion Recovery: Memproyeksikan posisi koordinat menggunakan sisa inersia kecepatan saat sensor tertutup
+     */
+    extrapolate(dt) {
+        const inertiaFriction = 0.90; // Reduksi gerak bertahap agar tidak melompat liar
+        for (let i = 0; i < 21; i++) {
+            this.velocities[i].x *= inertiaFriction;
+            this.velocities[i].y *= inertiaFriction;
+            this.velocities[i].z *= inertiaFriction;
+
+            this.smoothedLandmarks[i].x += this.velocities[i].x * dt;
+            this.smoothedLandmarks[i].y += this.velocities[i].y * dt;
+            this.smoothedLandmarks[i].z += this.velocities[i].z * dt;
+        }
+    }
+
+    /**
+     * Motion Prediction System: Menghitung antisipasi posisi koordinat ke depan demi mengunci visual objek
+     */
+    getPredictedLandmarks() {
+        const timeFactor = PREDICTION_FACTOR_MS / 1000;
+        return this.smoothedLandmarks.map((p, i) => ({
+            x: p.x + this.velocities[i].x * timeFactor,
+            y: p.y + this.velocities[i].y * timeFactor,
+            z: p.z + this.velocities[i].z * timeFactor
+        }));
+    }
+}
+
+// ==========================================
+// CAMERA INITIALIZATION & MEDIAPIPE PIPELINE
+// ==========================================
 async function startCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, frameRate: { ideal: 60 } }
+    });
     video.srcObject = stream;
 }
 startCamera();
 
-const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.75, minTrackingConfidence: 0.75 });
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.75, // Ditinggikan untuk mencegah salah deteksi noise background
+    minTrackingConfidence: 0.75
+});
+
 hands.onResults(onResults);
 
 const camera = new Camera(video, {
-    onFrame: async () => { await hands.send({ image: video }); },
-    width: 1280, height: 720
+    onFrame: async () => {
+        await hands.send({ image: video });
+    },
+    width: 1280,
+    height: 720
 });
 camera.start();
 
-// Handle perubahan ukuran layar browser secara dinamis tanpa merusak rasio 16:9
-window.addEventListener('resize', () => {
-    const w = canvas3d.clientWidth;
-    const h = canvas3d.clientHeight;
-    camera3d.aspect = w / h;
-    camera3d.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
-});
+// ==========================================
+// DATA ACQUISITION & ANTI-SWAP IDENTITY MATCHING
+// ==========================================
+function onResults(results) {
+    const now = performance.now();
+    const dt = (now - lastTimestamp) / 1000;
+    lastTimestamp = now;
+
+    // Memastikan canvas sinkron dengan dimensi frame video asli
+    if (video.videoWidth && video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    }
+
+    let currentDetections = [];
+    if (results.multiHandLandmarks && results.multiHandedness) {
+        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+            currentDetections.push({
+                landmarks: results.multiHandLandmarks[i],
+                info: results.multiHandedness[i]
+            });
+        }
+    }
+
+    let nextTrackedHands = [];
+
+    // Nearest Neighbor & Spatial Continuity Matching
+    currentDetections.forEach((det) => {
+        let matchedIndex = -1;
+        let closestDistance = 0.22; // Threshold maksimal jarak pergeseran per frame (Normalized)
+
+        for (let j = 0; j < trackedHands.length; j++) {
+            const th = trackedHands[j];
+            
+            // Validasi berbasis jarak Euclidean pada titik Wrist Anchor
+            const distance = Math.sqrt(
+                Math.pow(det.landmarks[WRIST_LANDMARK].x - th.smoothedLandmarks[WRIST_LANDMARK].x, 2) +
+                Math.pow(det.landmarks[WRIST_LANDMARK].y - th.smoothedLandmarks[WRIST_LANDMARK].y, 2)
+            );
+
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                matchedIndex = j;
+            }
+        }
+
+        if (matchedIndex !== -1) {
+            // Perbarui data historis objek tracking yang cocok
+            const handInstance = trackedHands[matchedIndex];
+            handInstance.update(det.landmarks, det.info, dt);
+            nextTrackedHands.push(handInstance);
+            trackedHands.splice(matchedIndex, 1); // Buang dari pool antrean agar tidak double-match
+        } else {
+            // Daftarkan tangan baru jika tidak ditemukan kecocokan historis terdekat
+            const newHand = new TrackedHand(det.landmarks, det.info);
+            nextTrackedHands.push(newHand);
+        }
+    });
+
+    // Tracking Persistence Engine: Pertahankan objek jika hilang sesaat (akibat occlusion)
+    trackedHands.forEach((th) => {
+        if (now - th.lastSeen < TRACKING_PERSISTENCE_MS) {
+            th.extrapolate(dt);
+            nextTrackedHands.push(th);
+        }
+    });
+
+    trackedHands = nextTrackedHands;
+}
+
+// ==========================================
+// HIGH PERFORMANCE 60 FPS DECOUPLED RENDERING LOOP
+// ==========================================
+function renderLoop() {
+    requestAnimationFrame(renderLoop);
+
+    // Bersihkan layar canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (trackedHands.length === 0) return;
+
+    trackedHands.forEach((hand) => {
+        // Ambil data posisi yang sudah dikompensasi latency menggunakan algoritma prediksi
+        const renderLandmarks = hand.getPredictedLandmarks();
+
+        // 1. Gambar Connectors (Skeleton Tulang)
+        drawConnectors(ctx, renderLandmarks, HAND_CONNECTIONS, {
+            color: hand.label === "Right" ? "#00FF88" : "#FF0077", // Pembeda warna visual tegas kiri vs kanan
+            lineWidth: 3.5
+        });
+
+        // 2. Gambar Joint Dots (Titik Landmark)
+        drawLandmarks(ctx, renderLandmarks, {
+            color: "#00E5FF",
+            fillColor: "#FFFFFF",
+            radius: 4
+        });
+
+        // 3. Apple Vision Pro Style: Render UI Pointer Stabilizer Ring di Ujung Jari Telunjuk
+        const indexTip = renderLandmarks[POINTER_LANDMARK];
+        ctx.beginPath();
+        ctx.arc(indexTip.x * canvas.width, indexTip.y * canvas.height, 9, 0, 2 * Math.PI);
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = "#00FFFF";
+        ctx.stroke();
+        ctx.shadowBlur = 0; // Reset efek bayangan shadow
+    });
+}
+
+// Jalankan loop visual konstan secara asinkronus mendahului AI thread
+requestAnimationFrame(renderLoop);
