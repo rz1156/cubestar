@@ -1,28 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MediaPipe Hand Tracking</title>
-
-<link rel="stylesheet" href="style.css">
-
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spatial Computing System - visionOS</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
-
 <body>
 
-<div class="camera-container">
+    <div class="camera-container" id="app-viewport">
+        <video id="video" autoplay playsinline></video>
+        
+        <div id="three-container"></div>
+        
+        <canvas id="canvas"></canvas>
 
-    <video id="video" autoplay playsinline></video>
+        <div id="object-inspector" class="glass-panel hidden">
+            <h3>OBJECT INSPECTOR</h3>
+            <div class="inspector-row"><span>ID:</span> <span id="insp-id">-</span></div>
+            <div class="inspector-row"><span>Type:</span> <span id="insp-type">-</span></div>
+            <div class="inspector-row"><span>Position:</span> <span id="insp-pos">-</span></div>
+            <div class="inspector-row"><span>Rotation:</span> <span id="insp-rot">-</span></div>
+            <div class="inspector-row"><span>Scale:</span> <span id="insp-scale">-</span></div>
+            <div class="inspector-row"><span>Velocity:</span> <span id="insp-vel">-</span></div>
+            <div class="inspector-row"><span>Status:</span> <span id="insp-status">-</span></div>
+        </div>
 
-    <canvas id="canvas"></canvas>
+        <div id="spatial-menu" class="glass-panel">
+            <span class="menu-title">visionOS Spatial Engine Active</span>
+            <div class="gesture-hints">✋ Hold Open Palm: Spawn | ✊ Hold Fist: Delete Selected</div>
+        </div>
+    </div>
 
-</div>
-
-<script src="script.js"></script>
-
+    <script src="script.js"></script>
 </body>
 </html>
